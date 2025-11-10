@@ -230,17 +230,6 @@ Contributions are welcome! Please:
 4. Test thoroughly
 5. Submit a pull request
 
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/YOUR_USERNAME/easun_smx/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/YOUR_USERNAME/easun_smx/discussions)
-- **Protocol Documentation**: [EASUN-ISOLAR-SMX-II-CONTROL](https://github.com/suletom/EASUN-ISOLAR-SMX-II-CONTROL)
-
-## Credits
-
-- Protocol reverse engineering: [suletom](https://github.com/suletom)
-- SRNE Modbus specification: [SRNE Solar](https://www.srnesolar.com/)
-- Home Assistant integration development: Community contributors
 
 ## License
 
