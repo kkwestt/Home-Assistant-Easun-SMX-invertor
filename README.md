@@ -7,7 +7,7 @@ Home Assistant custom integration for EASUN ISOLAR SMX II solar inverters with W
 
 **Based on protocol reverse engineering from [suletom/EASUN-ISOLAR-SMX-II-CONTROL](https://github.com/suletom/EASUN-ISOLAR-SMX-II-CONTROL)**
 
-![EASUN SMX Integration Screenshot](https://github.com/kkwestt/Home-Assistant-Easun-SMX-invertor/img.png) 
+![EASUN SMX Integration Screenshot](img.png) 
 
 ## Features
 
