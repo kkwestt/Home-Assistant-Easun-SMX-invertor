@@ -1,0 +1,10 @@
+{
+  "domain": "easun_smx",
+  "name": "EASUN ISOLAR SMX II",
+  "documentation": "https://github.com/suletom/EASUN-ISOLAR-SMX-II-CONTROL",
+  "requirements": [],
+  "codeowners": [],
+  "config_flow": true,
+  "iot_class": "local_polling",
+  "version": "1.0.0"
+}
