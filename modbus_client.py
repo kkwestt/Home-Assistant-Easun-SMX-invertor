@@ -21,7 +21,7 @@ class EasunModbusClient:
         self._tcp_port = 8899
         self._lock = threading.Lock()
         self._last_activity = 0
-        self._connection_timeout = 300  # 5 minutes
+        self._connection_timeout = 120  # 2 minutes
         self._transaction_id = 1
 
     def _get_local_ip(self) -> str:
@@ -191,6 +191,20 @@ class EasunModbusClient:
             try:
                 self._tcp_client_socket, addr = self._tcp_server.accept()
                 self._tcp_client_socket.settimeout(10)
+
+                # Enable TCP keepalive to detect dead connections
+                self._tcp_client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+
+                # Set keepalive parameters (may not work on all platforms)
+                try:
+                    # Linux
+                    self._tcp_client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
+                    self._tcp_client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+                    self._tcp_client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+                except (AttributeError, OSError):
+                    # macOS/Windows - use default keepalive settings
+                    pass
+
                 _LOGGER.info("Datalogger connected from %s", addr)
                 self._connected = True
                 self._last_activity = time.time()
@@ -212,8 +226,9 @@ class EasunModbusClient:
 
     def disconnect(self):
         """Disconnect from the inverter."""
+        _LOGGER.info("Disconnecting from inverter...")
         self._connected = False
-        
+
         if self._tcp_client_socket:
             try:
                 self._tcp_client_socket.shutdown(socket.SHUT_RDWR)
@@ -224,14 +239,20 @@ class EasunModbusClient:
             except:
                 pass
             self._tcp_client_socket = None
-        
+            _LOGGER.debug("Client socket closed")
+
         if self._tcp_server:
+            try:
+                self._tcp_server.shutdown(socket.SHUT_RDWR)
+            except:
+                pass
             try:
                 self._tcp_server.close()
             except:
                 pass
             self._tcp_server = None
-        
+            _LOGGER.debug("Server socket closed")
+
         # Give OS time to release the port
         time.sleep(0.5)
 
@@ -257,24 +278,37 @@ class EasunModbusClient:
             if not self.connect():
                 return None
 
+        # Verify socket is still valid before sending
+        if self._tcp_client_socket is None:
+            _LOGGER.warning("TCP socket is None, reconnecting...")
+            self._connected = False
+            if not self.connect():
+                return None
+
         try:
             _LOGGER.info(">>> Sending request (%d bytes): %s", len(request), self._format_hex(request))
             self._tcp_client_socket.sendall(request)
             self._last_activity = time.time()
-            
+
             # Receive response
             response = self._tcp_client_socket.recv(1024)
             self._last_activity = time.time()
-            
+
             if response:
                 _LOGGER.info("<<< Received response (%d bytes): %s", len(response), self._format_hex(response))
+                return response
             else:
-                _LOGGER.error("<<< Received empty response")
-            
-            return response
-            
+                # Empty response means connection was closed by remote
+                _LOGGER.error("<<< Connection closed by remote (empty response)")
+                self.disconnect()
+                return None
+
         except socket.timeout:
             _LOGGER.error("Timeout waiting for response")
+            self.disconnect()
+            return None
+        except (ConnectionResetError, BrokenPipeError, OSError) as err:
+            _LOGGER.error("Connection error: %s - reconnecting on next request", err)
             self.disconnect()
             return None
         except Exception as err:
