@@ -51,7 +51,7 @@ class EasunSensor(CoordinatorEntity, SensorEntity):
         self._config = config
         self._attr_name = f"EASUN {config['name']}"
         self._attr_unique_id = f"{entry.entry_id}_{key}"
-        
+
         # Set unit of measurement
         unit = config.get("unit", "")
         if unit == "V":
@@ -84,7 +84,7 @@ class EasunSensor(CoordinatorEntity, SensorEntity):
             self._attr_device_class = SensorDeviceClass.TEMPERATURE
         else:
             self._attr_native_unit_of_measurement = unit
-        
+
         # Set state class for numeric values
         if unit and unit not in ["", "status"]:
             if "energy" in key.lower() or "kwh" in key.lower():
@@ -92,17 +92,20 @@ class EasunSensor(CoordinatorEntity, SensorEntity):
             else:
                 self._attr_state_class = SensorStateClass.MEASUREMENT
 
+        if key == "battery_voltage":
+            self._attr_suggested_display_precision = 2
+
     @property
     def native_value(self):
         """Return the state of the sensor."""
         if self.coordinator.data is None:
             return None
-        
+
         value = self.coordinator.data.get(self._key)
-        
+
         if value is None:
             return None
-        
+
         # Map status values to readable strings
         if self._key == "output_priority":
             return OUTPUT_PRIORITY_MAP.get(int(value), f"Unknown ({value})")

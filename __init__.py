@@ -41,20 +41,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 # Add timeout to prevent hanging
                 data = await asyncio.wait_for(
                     hass.async_add_executor_job(client.read_all_registers, REGISTERS),
-                    timeout=60.0
+                    timeout=90.0  # Increased timeout to allow for reconnection attempts
                 )
                 
+                # Accept partial data - better than nothing
                 if not data:
                     _LOGGER.warning("No data received from inverter")
+                    # Don't raise UpdateFailed immediately - allow coordinator to retry
+                    # This prevents marking entity as unavailable too quickly
                     raise UpdateFailed("No data received from inverter")
+                
+                # Log if we got partial data
+                expected_count = len([k for k, v in REGISTERS.items() if v.get("type") == "input"])
+                if len(data) < expected_count:
+                    _LOGGER.warning("Received partial data: %d/%d registers", len(data), expected_count)
                 
                 _LOGGER.debug("Received %d values", len(data))
                 return data
                 
+            except asyncio.CancelledError:
+                _LOGGER.warning("Data fetch was cancelled, disconnecting...")
+                await hass.async_add_executor_job(client.disconnect)
+                raise  # Re-raise CancelledError to allow proper cleanup
             except asyncio.TimeoutError:
-                _LOGGER.error("Timeout fetching data from inverter")
+                _LOGGER.error("Timeout fetching data from inverter (120s)")
                 await hass.async_add_executor_job(client.disconnect)
                 raise UpdateFailed("Timeout communicating with inverter")
+            except UpdateFailed:
+                # Re-raise UpdateFailed as-is
+                raise
             except Exception as err:
                 _LOGGER.error("Update failed: %s", err, exc_info=True)
                 await hass.async_add_executor_job(client.disconnect)
@@ -68,16 +83,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL),
         )
 
-        _LOGGER.info("Performing first refresh (this may take up to 60 seconds)")
+        _LOGGER.info("Performing first refresh (this may take up to 120 seconds)")
         
-        # Add timeout for first refresh
+        # Add timeout for first refresh - longer timeout for initial connection
         try:
             await asyncio.wait_for(
                 coordinator.async_config_entry_first_refresh(),
-                timeout=90.0
+                timeout=150.0  # Increased timeout for initial connection
             )
+        except asyncio.CancelledError:
+            _LOGGER.warning("First refresh was cancelled")
+            await hass.async_add_executor_job(client.disconnect)
+            raise ConfigEntryNotReady("Initial connection was cancelled")
         except asyncio.TimeoutError:
-            _LOGGER.error("First refresh timed out after 90 seconds")
+            _LOGGER.error("First refresh timed out after 150 seconds")
             await hass.async_add_executor_job(client.disconnect)
             raise ConfigEntryNotReady("Timeout during initial connection")
 

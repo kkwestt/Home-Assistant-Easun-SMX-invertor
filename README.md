@@ -5,10 +5,6 @@
 
 Home Assistant custom integration for EASUN ISOLAR SMX II solar inverters with WiFi Plug Pro datalogger.
 
-**Based on protocol reverse engineering from [suletom/EASUN-ISOLAR-SMX-II-CONTROL](https://github.com/suletom/EASUN-ISOLAR-SMX-II-CONTROL)**
-
-![EASUN SMX Integration Screenshot](img.png) 
-
 ## Features
 
 - 📊 **Real-time monitoring** of all inverter parameters
@@ -39,7 +35,7 @@ Home Assistant custom integration for EASUN ISOLAR SMX II solar inverters with W
 2. Click on "Integrations"
 3. Click the three dots in the top right corner
 4. Select "Custom repositories"
-5. Add this repository URL: `https://github.com/kkwestt/Home-Assistant-Easun-SMX-invertor`
+5. Add this repository URL: `https://github.com/YOUR_USERNAME/easun_smx`
 6. Select category: "Integration"
 7. Click "Add"
 8. Find "EASUN ISOLAR SMX II" in HACS and click "Download"
@@ -55,7 +51,7 @@ Home Assistant custom integration for EASUN ISOLAR SMX II solar inverters with W
 cd /config
 mkdir -p custom_components
 cd custom_components
-git clone https://github.com/kkwestt/Home-Assistant-Easun-SMX-invertor.git
+git clone https://github.com/YOUR_USERNAME/easun_smx.git
 # Or download and extract the ZIP file
 ```
 
@@ -70,7 +66,7 @@ The WiFi Plug Pro adapter should be connected to your local network. Find its IP
 1. Go to **Settings** → **Devices & Services**
 2. Click **+ Add Integration**
 3. Search for "EASUN ISOLAR SMX II"
-4. Enter your inverter's IP address (e.g., `172.16.0.20`)
+4. Enter your inverter's IP address (e.g., `172.16.4.27`)
 5. Port is automatically set to `502` (Modbus TCP default)
 6. Click **Submit**
 

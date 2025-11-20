@@ -21,8 +21,9 @@ class EasunModbusClient:
         self._tcp_port = 8899
         self._lock = threading.Lock()
         self._last_activity = 0
-        self._connection_timeout = 120  # 2 minutes
+        self._connection_timeout = 60  # 1 minute (reduced from 2 minutes for faster reconnection)
         self._transaction_id = 1
+        self._consecutive_failures = 0
 
     def _get_local_ip(self) -> str:
         """Get local IP address that can reach the inverter."""
@@ -40,8 +41,10 @@ class EasunModbusClient:
         """Check if connection is stale."""
         if not self._connected:
             return True
-        if time.time() - self._last_activity > self._connection_timeout:
-            _LOGGER.info("Connection is stale, will reconnect")
+        time_since_activity = time.time() - self._last_activity
+        if time_since_activity > self._connection_timeout:
+            _LOGGER.info("Connection is stale (last activity: %.1f seconds ago, timeout: %d seconds), will reconnect", 
+                        time_since_activity, self._connection_timeout)
             return True
         return False
 
@@ -228,6 +231,7 @@ class EasunModbusClient:
         """Disconnect from the inverter."""
         _LOGGER.info("Disconnecting from inverter...")
         self._connected = False
+        self._consecutive_failures = 0
 
         if self._tcp_client_socket:
             try:
@@ -272,6 +276,80 @@ class EasunModbusClient:
         """Format bytes as hex string for logging."""
         return ' '.join(f'{b:02x}' for b in data)
 
+    def _check_socket_valid(self) -> bool:
+        """Check if socket is still valid."""
+        if self._tcp_client_socket is None:
+            return False
+        
+        try:
+            # Check socket state - if it's closed, getsockopt will raise an error
+            # On some platforms, we can check SO_ERROR
+            try:
+                error = self._tcp_client_socket.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                if error != 0:
+                    _LOGGER.debug("Socket has error state: %d", error)
+                    return False
+            except (OSError, AttributeError):
+                # SO_ERROR may not be available on all platforms
+                pass
+            
+            # Additional check: verify socket is not closed
+            # If socket is closed, fileno() will raise an exception
+            self._tcp_client_socket.fileno()
+            return True
+        except (OSError, AttributeError, ValueError):
+            # Socket is closed or invalid
+            return False
+
+    def _receive_full_response(self) -> Optional[bytes]:
+        """Receive full Modbus TCP response by reading header first, then payload."""
+        try:
+            # Read Modbus TCP header (6 bytes: transaction_id + protocol_id + length)
+            header = b""
+            while len(header) < 6:
+                chunk = self._tcp_client_socket.recv(6 - len(header))
+                if not chunk:
+                    _LOGGER.error("Connection closed while reading header")
+                    return None
+                header += chunk
+            
+            # Parse length field (bytes 4-5, big-endian)
+            length = struct.unpack('>H', header[4:6])[0]
+            
+            # Sanity check: Modbus TCP length should be reasonable (max 260 bytes for Modbus)
+            # But this device uses custom protocol, so allow up to 1024 bytes
+            if length > 1024:
+                _LOGGER.error("Invalid response length: %d bytes (max 1024)", length)
+                return None
+            
+            if length == 0:
+                _LOGGER.error("Zero length response")
+                return None
+            
+            # Read the rest of the packet (unit_id + function_code + data)
+            payload = b""
+            while len(payload) < length:
+                chunk = self._tcp_client_socket.recv(length - len(payload))
+                if not chunk:
+                    _LOGGER.error("Connection closed while reading payload (got %d/%d bytes)", 
+                                 len(payload), length)
+                    return None
+                payload += chunk
+            
+            # Combine header and payload
+            response = header + payload
+            return response
+            
+        except socket.timeout:
+            _LOGGER.error("Timeout while receiving response")
+            return None
+        except (ConnectionResetError, BrokenPipeError, OSError) as err:
+            _LOGGER.error("Connection error while receiving: %s", err)
+            return None
+        except struct.error as err:
+            _LOGGER.error("Error parsing response header: %s", err)
+            return None
+
     def _send_modbus_request(self, request: bytes) -> Optional[bytes]:
         """Send Modbus request and receive response."""
         if not self._connected or self._is_connection_stale():
@@ -279,8 +357,8 @@ class EasunModbusClient:
                 return None
 
         # Verify socket is still valid before sending
-        if self._tcp_client_socket is None:
-            _LOGGER.warning("TCP socket is None, reconnecting...")
+        if self._tcp_client_socket is None or not self._check_socket_valid():
+            _LOGGER.warning("TCP socket is invalid, reconnecting...")
             self._connected = False
             if not self.connect():
                 return None
@@ -290,16 +368,15 @@ class EasunModbusClient:
             self._tcp_client_socket.sendall(request)
             self._last_activity = time.time()
 
-            # Receive response
-            response = self._tcp_client_socket.recv(1024)
-            self._last_activity = time.time()
-
+            # Receive full response
+            response = self._receive_full_response()
             if response:
+                self._last_activity = time.time()
                 _LOGGER.info("<<< Received response (%d bytes): %s", len(response), self._format_hex(response))
                 return response
             else:
-                # Empty response means connection was closed by remote
-                _LOGGER.error("<<< Connection closed by remote (empty response)")
+                # Empty or incomplete response means connection was closed or broken
+                _LOGGER.error("<<< Failed to receive complete response")
                 self.disconnect()
                 return None
 
@@ -505,18 +582,65 @@ class EasunModbusClient:
             # Connect once for all reads
             if not self._connected or self._is_connection_stale():
                 if not self.connect():
+                    _LOGGER.warning("Failed to connect, returning empty data")
                     return data
             
+            # Verify connection is still valid before starting reads
+            if not self._check_socket_valid():
+                _LOGGER.warning("Socket invalid before reading registers, reconnecting...")
+                self._connected = False
+                if not self.connect():
+                    _LOGGER.warning("Failed to reconnect, returning empty data")
+                    return data
+            
+            consecutive_errors = 0
+            max_consecutive_errors = 3
+            
             for key, config in registers.items():
-                value = self.read_register(
-                    address=config["address"],
-                    register_type=config["type"],
-                    scale=config.get("scale", 1.0)
-                )
-                if value is not None:
-                    data[key] = value
-                
-                # Small delay between reads
-                time.sleep(0.1)
+                try:
+                    value = self.read_register(
+                        address=config["address"],
+                        register_type=config["type"],
+                        scale=config.get("scale", 1.0)
+                    )
+                    if value is not None:
+                        data[key] = value
+                        consecutive_errors = 0  # Reset error counter on success
+                    else:
+                        consecutive_errors += 1
+                        _LOGGER.warning("Failed to read register %s (0x%04X), consecutive errors: %d", 
+                                       key, config["address"], consecutive_errors)
+                        
+                        # If too many consecutive errors, try to reconnect
+                        if consecutive_errors >= max_consecutive_errors:
+                            _LOGGER.warning("Too many consecutive errors (%d), attempting reconnect...", 
+                                          consecutive_errors)
+                            self._connected = False
+                            if self.connect():
+                                consecutive_errors = 0
+                            else:
+                                _LOGGER.error("Reconnection failed, stopping read cycle")
+                                break
+                    
+                    # Small delay between reads
+                    time.sleep(0.1)
+                    
+                except Exception as err:
+                    consecutive_errors += 1
+                    _LOGGER.error("Exception reading register %s: %s", key, err, exc_info=True)
+                    
+                    if consecutive_errors >= max_consecutive_errors:
+                        _LOGGER.warning("Too many consecutive errors, attempting reconnect...")
+                        self._connected = False
+                        if self.connect():
+                            consecutive_errors = 0
+                        else:
+                            _LOGGER.error("Reconnection failed, stopping read cycle")
+                            break
+            
+            if not data:
+                _LOGGER.warning("No data read from any registers")
+            else:
+                _LOGGER.debug("Successfully read %d out of %d registers", len(data), len(registers))
             
             return data
